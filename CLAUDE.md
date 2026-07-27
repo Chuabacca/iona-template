@@ -67,7 +67,7 @@ makes a run reproducible. Work one inbox item at a time.
    `search --reindex`, prints the summary (sections written / judged absent /
    entries / questions raised), and clears the inbox item **last**.
 6. **Report**, then show the user the diff and commit only after their go-ahead
-   (conventional message, e.g. `ingest: macarthur 2026-07-13 rom 8:28-30`).
+   (conventional message, e.g. `ingest: lewis 2026-07-13 rom 8:28-30`).
 
 **Transcripts that did not come from `scripts/transcribe`** (platform exports,
 pasted text) are often a single unbroken block with no blank lines, which makes

@@ -144,7 +144,7 @@ After the last item, report in one block:
 - any validate warnings worth acting on
 
 Then show the user the diff. **Commit only after their go-ahead**, with a
-conventional message: `ingest: busenitz 2026-07-19 acts 19-20`.
+conventional message: `ingest: <speaker-slug> <date> <passage>`.
 
 ## Never
 
