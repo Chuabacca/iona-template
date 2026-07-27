@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""fetch-bsb — download the Berean Standard Bible into the text store.
+
+Usage: scripts/fetch-bsb [--from FILE] [--force] [--help]
+  (no args)    download bsb.txt from bereanbible.com and convert
+  --from FILE  convert an already-downloaded bsb.txt instead of fetching
+  --force      overwrite an existing bsb version directory
+
+Writes scripture/_text/bsb/<book>/<NN>.md per SPEC §6. The BSB is dedicated
+to the public domain by its publisher, which is why it ships in-repo; every
+other version is owner-supplied and gitignored. Exit 0 on success, 1 on error.
+"""
+
+import os
+import re
+import sys
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lib  # noqa: E402
+
+URL = "https://bereanbible.com/bsb.txt"
+VERSION = "bsb"
+REF_RE = re.compile(r"^(.+?) (\d+):(\d+)$")
+# The BSB carries verse numbers with no text where its base text omits the
+# verse (Matt 17:21, John 5:4, Acts 8:37, ...). Record the omission rather
+# than dropping the verse, so the generator reports "omitted here" instead of
+# asking the owner to supply text that does not exist in this translation.
+OMITTED = "[omitted in BSB — not in the earliest manuscripts]"
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=120) as r:
+        return r.read().decode("utf-8-sig")
+
+
+def parse(raw):
+    """Return ({(code, ch): {v: text}}, [anomaly, ...])."""
+    _by_code, alias = lib.load_books()
+    store, anomalies = {}, []
+    for i, line in enumerate(raw.split("\n"), start=1):
+        line = line.rstrip("\r")
+        if "\t" not in line:
+            continue
+        ref, text = line.split("\t", 1)
+        text = " ".join(text.split())
+        m = REF_RE.match(ref.strip())
+        if not m:
+            continue  # header rows ("Verse", title lines)
+        if not text:
+            text = OMITTED
+        code = alias.get(m.group(1).strip().lower())
+        if code is None:
+            anomalies.append("line %d: unknown book %r" % (i, m.group(1)))
+            continue
+        store.setdefault((code, int(m.group(2))), {})[int(m.group(3))] = text
+    return store, anomalies
+
+
+def check_versification(store):
+    """Compare against books.json (KJV) counts. Differences are expected."""
+    by_code, _ = lib.load_books()
+    notes = []
+    for code, b in sorted(by_code.items()):
+        for ch in range(1, b["chapters"] + 1):
+            expected = b["verse_counts"][ch - 1]
+            got = store.get((code, ch))
+            if not got:
+                notes.append("%s %d: missing entirely" % (code, ch))
+                continue
+            if max(got) != expected:
+                notes.append("%s %d: highest verse %d (KJV has %d)"
+                             % (code, ch, max(got), expected))
+            gaps = [v for v in range(1, max(got) + 1) if v not in got]
+            if gaps:
+                notes.append("%s %d: gap at verse(s) %s"
+                             % (code, ch, ", ".join(str(g) for g in gaps)))
+    return notes
+
+
+def write(store, force):
+    root = os.path.join(lib.ROOT, "scripture", "_text", VERSION)
+    if os.path.isdir(root) and not force:
+        print("fetch-bsb: %s already exists — use --force to overwrite"
+              % os.path.relpath(root, lib.ROOT), file=sys.stderr)
+        return None
+    by_code, _ = lib.load_books()
+    written = 0
+    for (code, ch), verses in sorted(store.items()):
+        bdir = by_code[code]["name"].lower().replace(" ", "-")
+        out = os.path.join(root, bdir, "%02d.md" % ch)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        body = "".join("%s.%d.%d | %s\n" % (code, ch, v, verses[v])
+                       for v in sorted(verses))
+        lib.atomic_write(out, body)
+        written += 1
+    return written
+
+
+def main(argv):
+    if "--help" in argv:
+        print(__doc__)
+        return 0
+    force = "--force" in argv
+    src = None
+    if "--from" in argv:
+        src = argv[argv.index("--from") + 1]
+
+    if src:
+        with open(src, encoding="utf-8-sig") as f:
+            raw = f.read()
+    else:
+        print("fetch-bsb: downloading %s ..." % URL)
+        try:
+            raw = fetch(URL)
+        except Exception as e:  # noqa: BLE001 - network surface is broad
+            print("ERROR: download failed: %s" % e, file=sys.stderr)
+            return 1
+
+    store, anomalies = parse(raw)
+    total = sum(len(v) for v in store.values())
+    if total < 30000:
+        print("ERROR: parsed only %d verses — source format may have changed"
+              % total, file=sys.stderr)
+        return 1
+
+    written = write(store, force)
+    if written is None:
+        return 1
+
+    for a in anomalies:
+        print("WARN: %s" % a, file=sys.stderr)
+    for n in check_versification(store):
+        print("NOTE: versification differs — %s" % n, file=sys.stderr)
+    print("fetch-bsb: %d verses across %d chapter file(s) -> scripture/_text/%s/"
+          % (total, written, VERSION))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

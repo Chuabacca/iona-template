@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""generate — rebuild all generated pages, deterministically and atomically.
+
+Usage: scripts/generate [--help]
+Builds the scripture tree (one file per verse, SPEC §7):
+
+    scripture/<book>/index.md              book index
+    scripture/<book>/<CCC>/index.md        chapter index (every verse + text)
+    scripture/<book>/<CCC>/<VVV>.md        verse page (only where notes exist)
+
+plus speakers/, series/, topics/_generated/, INDEX.md. Output is byte-identical
+for identical input; stale generated files are removed. Never touches
+hand-written files (scripture/_text/, topics/*.md, content dirs).
+"""
+
+import json
+import os
+import sys
+from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lib  # noqa: E402
+
+TSK_PATH = os.path.join(lib.ROOT, "scripts", "tsk", "cross_references.json")
+
+
+slug = lib.slugify
+
+
+def v_file(v):
+    """Verse page basename, as linked from within its own chapter directory."""
+    return "%0*d.md" % (lib.V_PAD, v)
+
+
+def ch_name(ch):
+    """Chapter directory basename, as linked from within its own book."""
+    return "%0*d" % (lib.CH_PAD, ch)
+
+
+def load_pages():
+    pages = []
+    for path in lib.iter_page_paths():
+        try:
+            text = lib.read_text(path)
+        except lib.SpecError:
+            continue
+        fields, body, fm_errors, _ = lib.parse_frontmatter(text)
+        if fm_errors or fields.get("type") not in lib.REQUIRED_FIELDS:
+            continue
+        entries = []
+        for section, _h, lines in lib.iter_sections(body):
+            if section is None:
+                continue
+            for _n, line in lines:
+                if line.startswith("- "):
+                    e = lib.parse_entry(line)
+                    if e:
+                        e["section"] = section
+                        entries.append(e)
+        summary = ""
+        paras = lib.paragraphs(body)
+        if paras and not paras[0].startswith("#"):
+            summary = paras[0].split("\n")[0]
+        pages.append({
+            "path": os.path.relpath(path, lib.ROOT),
+            "fields": fields,
+            "entries": entries,
+            "summary": summary,
+        })
+    pages.sort(key=lambda p: (p["fields"].get("date", ""), p["path"]))
+    return pages
+
+
+def load_text_store(version):
+    """{(code, ch): {v: text}} for one version of the text store."""
+    store = {}
+    root = os.path.join(lib.TEXT_ROOT, version)
+    if not os.path.isdir(root):
+        return store
+    for dirpath, _dirs, files in os.walk(root):
+        for name in sorted(files):
+            if not name.endswith(".md") or not name[:-3].isdigit():
+                continue
+            try:
+                text = lib.read_text(os.path.join(dirpath, name))
+            except lib.SpecError:
+                continue
+            for line in text.split("\n"):
+                m = lib.VERSE_LINE_RE.match(line)
+                if m:
+                    try:
+                        p = lib.parse_key(m.group(1))
+                    except lib.SpecError:
+                        continue
+                    store.setdefault((p["book"], p["ch"]), {})[p["v1"]] = m.group(2)
+    return store
+
+
+def load_tsk():
+    if os.path.exists(TSK_PATH):
+        with open(TSK_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def page_link(page, from_dir):
+    target = os.path.join(lib.ROOT, page["path"])
+    rel = os.path.relpath(target, os.path.join(lib.ROOT, from_dir))
+    title = page["fields"].get("title", page["path"])
+    return "[%s](%s)" % (title, rel.replace(os.sep, "/"))
+
+
+def entry_line_render(page, e, from_dir):
+    keys = " ".join("`[%s]`" % k for k in e["keys"])
+    bits = [b for b in (keys, e["prose"]) if b]
+    src = page_link(page, from_dir)
+    meta = "%s · %s" % (e["section"], src)
+    return "- %s — %s" % (" ".join(bits), meta)
+
+
+def verse_entry_render(page, e, vkey, from_dir):
+    """One note on a verse page. The section is already the heading above it,
+    and the verse key is the page itself, so neither is repeated — a key is
+    shown only when it is broader than this verse (a range or chapter key)."""
+    extra = [k for k in e["keys"] if k != vkey]
+    prefix = ("%s " % " ".join("`[%s]`" % k for k in extra)) if extra else ""
+    return "- %s%s — %s · %s" % (prefix, e["prose"], page_link(page, from_dir),
+                                 page["fields"].get("date", "????"))
+
+
+def entry_sort_key(pe):
+    page, e = pe
+    return (page["fields"].get("date", ""), page["path"], e["prose"])
+
+
+def dedup(lines):
+    out, seen = [], set()
+    for line in lines:
+        if line not in seen:
+            seen.add(line)
+            out.append(line)
+    return out
+
+
+def build(outputs):
+    pages = load_pages()
+    version = lib.default_text_version()          # display text (public domain)
+    text_store = load_text_store(version)
+    version_label = version.upper()
+    primary = lib.primary_text_version()          # study text (missing worklist)
+    primary_store = (text_store if primary == version
+                     else load_text_store(primary))
+    primary_label = primary.upper()
+    tsk = load_tsk()
+
+    # A multi-verse note is stored once, on the FIRST verse of its range; the
+    # remaining verses carry only a lightweight reference back to it.
+    verse_map = defaultdict(list)     # (b,c,v) -> [(page, entry)]  full entries
+    verse_ref = defaultdict(list)     # (b,c,v) -> [(rangekey, first_v, page)]
+    chapter_map = defaultdict(list)   # (b,c)   -> [(page, entry)]  chapter-level
+    question_count = 0
+    anchor_free = 0
+    for page in pages:
+        anchors_required = (bool(page["fields"].get("source"))
+                            and page["fields"].get("medium") != lib.UNANCHORED_MEDIUM)
+        for e in page["entries"]:
+            if e["section"] == "question":
+                question_count += 1
+            if anchors_required and e["para"] is None:
+                anchor_free += 1
+            for k in e["keys"]:
+                try:
+                    p = lib.parse_key(k)
+                except lib.SpecError:
+                    continue
+                if p["ch"] is None:
+                    continue
+                if p["v1"] is None:
+                    chapter_map[(p["book"], p["ch"])].append((page, e))
+                    continue
+                first = p["v1"]
+                verse_map[(p["book"], p["ch"], first)].append((page, e))
+                if p["v2"] and p["v2"] > first:
+                    for v in range(first + 1, p["v2"] + 1):
+                        verse_ref[(p["book"], p["ch"], v)].append((k, first, page))
+
+    chapters = set()
+    for (b, c, _v) in verse_map:
+        chapters.add((b, c))
+    for (b, c, _v) in verse_ref:
+        chapters.add((b, c))
+    chapters.update(chapter_map)
+    chapters.update(text_store)
+    chapters.update(primary_store)
+
+    by_code, _ = lib.load_books()
+    missing_text_total = 0
+    verse_page_count = 0
+    # book code -> [(ch, n_cited_verses, n_notes)] for the book index
+    book_chapters = defaultdict(list)
+
+    for (code, ch) in sorted(chapters):
+        verses = sorted({v for (b, c, v) in verse_map if b == code and c == ch}
+                        | {v for (b, c, v) in verse_ref if b == code and c == ch}
+                        | set(text_store.get((code, ch), {}))
+                        | set(primary_store.get((code, ch), {})))
+        # Verses that carry something worth a page of their own.
+        cited = [v for v in verses
+                 if verse_map.get((code, ch, v)) or verse_ref.get((code, ch, v))]
+        n_notes = sum(len(verse_map.get((code, ch, v), [])) for v in cited)
+        cited_missing = []
+
+        for v in cited:
+            vkey = "%s.%d.%d" % (code, ch, v)
+            out_rel = lib.verse_page_rel(code, ch, v)
+            from_dir = os.path.dirname(out_rel)
+            lines = [lib.GENERATED_HEADER, "", "# %s" % lib.human_ref(vkey), ""]
+
+            nav = ["`%s`" % vkey, "[%s](index.md)" % lib.human_ref("%s.%d" % (code, ch))]
+            prev_v = max((x for x in cited if x < v), default=None)
+            next_v = min((x for x in cited if x > v), default=None)
+            if prev_v is not None:
+                nav.append("[← v%d](%s)" % (prev_v, v_file(prev_v)))
+            if next_v is not None:
+                nav.append("[v%d →](%s)" % (next_v, v_file(next_v)))
+            lines += [" · ".join(nav), ""]
+
+            vtext = text_store.get((code, ch), {}).get(v)
+            if vtext:
+                lines += ["> %s (%s)" % (vtext, version_label), ""]
+            ptext = (primary_store.get((code, ch), {}).get(v)
+                     if primary != version else None)
+            if ptext:
+                lines += ["> %s (%s)" % (ptext, primary_label), ""]
+
+            # Notes, grouped by section — the payoff of a per-verse file: as
+            # notes accumulate they stay sorted into exegesis/application/…
+            # rather than piling up in one undifferentiated list.
+            hits = sorted(verse_map.get((code, ch, v), []), key=entry_sort_key)
+            for section in lib.SECTIONS:
+                in_section = [pe for pe in hits if pe[1]["section"] == section]
+                if not in_section:
+                    continue
+                lines += ["## %s" % lib.SECTION_TITLES[section], ""]
+                lines += dedup([verse_entry_render(page, e, vkey, from_dir)
+                                for page, e in in_section])
+                lines.append("")
+
+            # Notes keyed to a range that starts earlier: stored once, at the
+            # range's first verse; here only a pointer back to it (SPEC §7).
+            refs = verse_ref.get((code, ch, v), [])
+            if refs:
+                lines += ["## Also referenced", ""]
+                lines += dedup([
+                    "- `[%s]` note at [v%d](%s) · %s"
+                    % (rangekey, first_v, v_file(first_v), page_link(page, from_dir))
+                    for rangekey, first_v, page in sorted(
+                        refs, key=lambda r: (r[1], r[0], r[2]["path"]))])
+                lines.append("")
+
+            xrefs = tsk.get(vkey)
+            if xrefs:
+                lines += ["## Cross-references", "",
+                          ", ".join(r[0] for r in xrefs[:12]), ""]
+
+            if not primary_store.get((code, ch), {}).get(v):
+                cited_missing.append(vkey)
+                lines += ["## Missing %s text" % primary_label, "",
+                          "Ask the owner for `%s`." % vkey, ""]
+
+            outputs[out_rel] = "\n".join(lines).rstrip() + "\n"
+            verse_page_count += 1
+
+        # ------------------------------------------------ chapter index
+        out_rel = lib.chapter_index_rel(code, ch)
+        from_dir = os.path.dirname(out_rel)
+        title = lib.human_ref("%s.%d" % (code, ch))
+        lines = [lib.GENERATED_HEADER, "", "# %s" % title, ""]
+        lines += [" · ".join([
+            "`%s.%d`" % (code, ch),
+            "[%s](../index.md)" % by_code[code]["name"],
+            "%d verses" % len(verses),
+            "%d with notes" % len(cited)]), ""]
+
+        ch_entries = chapter_map.get((code, ch), [])
+        if ch_entries:
+            lines += ["## Chapter", ""]
+            lines += dedup([entry_line_render(page, e, from_dir)
+                            for page, e in sorted(ch_entries, key=entry_sort_key)])
+            lines.append("")
+
+        lines += ["## Verses", ""]
+        for v in verses:
+            vkey = "%s.%d.%d" % (code, ch, v)
+            n = len(verse_map.get((code, ch, v), []))
+            r = len(verse_ref.get((code, ch, v), []))
+            if v in cited:
+                tally = ", ".join(
+                    ([("%d note%s" % (n, "" if n == 1 else "s"))] if n else [])
+                    + ([("%d reference%s" % (r, "" if r == 1 else "s"))] if r else []))
+                lines.append("### v%d — [%s](%s) · %s" % (v, vkey, v_file(v), tally))
+            else:
+                lines.append("### v%d — %s" % (v, vkey))
+            lines.append("")
+            vtext = text_store.get((code, ch), {}).get(v)
+            if vtext:
+                lines += ["> %s (%s)" % (vtext, version_label), ""]
+
+        if cited_missing:
+            missing_text_total += len(cited_missing)
+            lines += ["## Missing %s text" % primary_label, "",
+                      "Ask the owner for: %s" % ", ".join(cited_missing), ""]
+        outputs[out_rel] = "\n".join(lines).rstrip() + "\n"
+        book_chapters[code].append((ch, len(cited), n_notes))
+
+    # ------------------------------------------------------------ book indexes
+    by_code, _ = lib.load_books()
+    for code, chs in sorted(book_chapters.items()):
+        out_rel = lib.book_index_rel(code)
+        name = by_code[code]["name"]
+        with_notes = [c for c in chs if c[1]]
+        lines = [lib.GENERATED_HEADER, "", "# %s" % name, ""]
+        lines += [" · ".join([
+            "`%s`" % code,
+            "%d chapters" % len(chs),
+            "%d with notes" % len(with_notes)]), "", "## Chapters", ""]
+        for ch, n_cited, n_notes in sorted(chs):
+            link = "[%s](%s/index.md)" % (lib.human_ref("%s.%d" % (code, ch)), ch_name(ch))
+            if n_cited:
+                lines.append("- %s — %d verse%s with notes, %d note%s"
+                             % (link, n_cited, "" if n_cited == 1 else "s",
+                                n_notes, "" if n_notes == 1 else "s"))
+            else:
+                lines.append("- %s" % link)
+        outputs[out_rel] = "\n".join(lines).rstrip() + "\n"
+
+    # speakers & series
+    groups = {"speakers": defaultdict(list), "series": defaultdict(list)}
+    for page in pages:
+        sp = page["fields"].get("speaker")
+        if isinstance(sp, str) and sp:
+            groups["speakers"][sp].append(page)
+        se = page["fields"].get("series")
+        if isinstance(se, str) and se:
+            groups["series"][se].append(page)
+    for kind, mapping in sorted(groups.items()):
+        for name, plist in sorted(mapping.items()):
+            out_rel = os.path.join(kind, "%s.md" % slug(name))
+            lines = [lib.GENERATED_HEADER, "", "# %s" % name, ""]
+            for page in plist:
+                f = page["fields"]
+                passages = ", ".join(lib.as_list(f.get("passages"))) or "—"
+                lines.append("- %s — %s (%s)" % (
+                    f.get("date", "????"), page_link(page, kind), passages))
+            outputs[out_rel] = "\n".join(lines) + "\n"
+
+    # topic backlink indexes
+    tag_map = defaultdict(list)
+    for page in pages:
+        for t in lib.as_list(page["fields"].get("tags")):
+            tag_map[t].append(page)
+    for tag, plist in sorted(tag_map.items()):
+        out_rel = os.path.join("topics", "_generated", "%s.md" % slug(tag))
+        from_dir = os.path.dirname(out_rel)
+        lines = [lib.GENERATED_HEADER, "", "# tag: %s" % tag, ""]
+        for page in plist:
+            lines.append("- %s — %s" % (page["fields"].get("date", "????"),
+                                        page_link(page, from_dir)))
+        outputs[out_rel] = "\n".join(lines) + "\n"
+
+    # INDEX.md — stats + health signals
+    counts = defaultdict(int)
+    for page in pages:
+        counts[page["fields"]["type"]] += 1
+    orphan_tags = sorted(t for t in tag_map
+                         if not os.path.exists(
+                             os.path.join(lib.ROOT, "topics", "%s.md" % t)))
+    recent = pages[-5:][::-1]
+    lines = [lib.GENERATED_HEADER, "", "# iona index", "", "## Stats", ""]
+    for t in sorted(lib.REQUIRED_FIELDS):
+        lines.append("- %s pages: %d" % (t, counts.get(t, 0)))
+    lines.append("- speakers: %d · series: %d · tags: %d" % (
+        len(groups["speakers"]), len(groups["series"]), len(tag_map)))
+    lines.append("- verse pages: %d · chapters indexed: %d · books indexed: %d"
+                 % (verse_page_count, len(chapters), len(book_chapters)))
+    lines += ["", "## Health", ""]
+    lines.append("- open questions: %d" % question_count)
+    lines.append("- anchor-free entries on sermon/resource pages: %d" % anchor_free)
+    lines.append("- tags without topic pages: %d%s"
+                 % (len(orphan_tags),
+                    (" (%s)" % ", ".join(orphan_tags[:8])) if orphan_tags else ""))
+    lines.append("- verses cited but missing %s text: %d"
+                 % (primary_label, missing_text_total))
+    lines += ["", "## Recent", ""]
+    for page in recent:
+        lines.append("- %s — %s" % (page["fields"].get("date", "????"),
+                                    page_link(page, ".")))
+    outputs["INDEX.md"] = "\n".join(lines) + "\n"
+
+
+def sweep_stale(outputs):
+    """Remove generated files (bearing the header) we no longer produce."""
+    removed = []
+    roots = [os.path.join(lib.ROOT, "scripture"),
+             os.path.join(lib.ROOT, "speakers"),
+             os.path.join(lib.ROOT, "series"),
+             os.path.join(lib.ROOT, "topics", "_generated")]
+    for r in roots:
+        for dirpath, dirs, files in os.walk(r):
+            if os.path.basename(dirpath) == "_text":
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if d != "_text"]
+            for name in files:
+                if not name.endswith(".md"):
+                    continue
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, lib.ROOT)
+                if rel in outputs:
+                    continue
+                try:
+                    first = lib.read_text(full).split("\n", 1)[0]
+                except lib.SpecError:
+                    continue
+                if first == lib.GENERATED_HEADER:
+                    os.unlink(full)
+                    removed.append(rel)
+    # A chapter that loses its last generated page leaves an empty directory
+    # behind; prune bottom-up so the tree matches the corpus exactly.
+    for r in roots:
+        for dirpath, _dirs, _files in sorted(os.walk(r, topdown=False)):
+            if dirpath == r or os.sep + "_text" in dirpath + os.sep:
+                continue
+            if not os.listdir(dirpath):
+                os.rmdir(dirpath)
+    return removed
+
+
+def main(argv):
+    if "--help" in argv:
+        print(__doc__)
+        return 0
+    outputs = {}
+    build(outputs)
+    changed = 0
+    for rel, content in sorted(outputs.items()):
+        full = os.path.join(lib.ROOT, rel)
+        old = None
+        if os.path.exists(full):
+            try:
+                old = lib.read_text(full)
+            except lib.SpecError:
+                old = None
+        if old != content:
+            lib.atomic_write(full, content)
+            changed += 1
+    removed = sweep_stale(outputs)
+    print("generate: %d file(s) written, %d changed, %d stale removed"
+          % (len(outputs), changed, len(removed)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""ingest — the deterministic half of the ingestion pipeline (/meditate).
+
+Ingestion has exactly one step that needs judgment: reading a transcript and
+writing categorized, anchored entries. Everything around it — dedupe, resume
+detection, slug and path derivation, passage-key conversion, scaffolding, the
+post-write command sequence, the summary, clearing the inbox — is mechanical,
+and lives here so that it runs the same way every time.
+
+Usage:
+  scripts/ingest status [<path>...]        state of inbox items (JSON)
+  scripts/ingest plan <path> [meta...]     derived paths + keys, no writes (JSON)
+  scripts/ingest stage <path> [meta...]    copy to sources/, scaffold the page
+  scripts/ingest check <path>              is the page ready to finish? (JSON)
+  scripts/ingest finish <path>             validate, generate, reindex, report, clear inbox
+  scripts/ingest needs-info <path> --reason "..."   mark a blocked inbox item
+
+Metadata flags (plan/stage): --type --title --date --speaker --venue --medium
+--series --passage (repeatable) --tag (repeatable).
+
+<path> is an inbox item, a sources/ transcript, or a processed page — each
+command resolves whichever it needs. Exit 0 on success, 1 on errors;
+--strict promotes warnings to errors.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lib  # noqa: E402
+
+INBOX = os.path.join(lib.ROOT, "inbox")
+SOURCES = os.path.join(lib.ROOT, "sources")
+TODO_MARKER = "TODO(meditate)"
+TYPE_DIR = {"sermon": "sermons", "note": "notes", "resource": "resources"}
+
+
+def die(msg):
+    print("ERROR: %s" % msg, file=sys.stderr)
+    return 1
+
+
+def emit(obj):
+    print(json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def rel(path):
+    return os.path.relpath(os.path.abspath(path), lib.ROOT)
+
+
+# ---------------------------------------------------------------- identity
+
+def content_hash(path):
+    """Hash of the NORMALIZED text, so line endings and BOMs never make the
+    same transcript look like two different sources."""
+    return hashlib.sha256(lib.read_text(path).encode("utf-8")).hexdigest()
+
+
+def iter_sources():
+    for dirpath, _dirs, files in os.walk(SOURCES):
+        for name in sorted(files):
+            if name.endswith(".md"):
+                yield os.path.join(dirpath, name)
+
+
+def source_by_hash(h):
+    for path in sorted(iter_sources()):
+        try:
+            if content_hash(path) == h:
+                return rel(path)
+        except lib.SpecError:
+            continue
+    return None
+
+
+def pages_referencing(source_rel):
+    """Processed pages whose `source:` field points at this transcript. A
+    source counts as ingested only when such a page exists (CLAUDE.md §2)."""
+    out = []
+    for path in lib.iter_page_paths():
+        try:
+            fields, _b, errs, _w = lib.parse_frontmatter(lib.read_text(path))
+        except lib.SpecError:
+            continue
+        if errs:
+            continue
+        if fields.get("source") == source_rel:
+            out.append(rel(path))
+    return sorted(out)
+
+
+def item_state(path):
+    """new | staged | ingested — plus everything needed to resume."""
+    h = content_hash(path)
+    src = source_by_hash(h)
+    pages = pages_referencing(src) if src else []
+    if not src:
+        state = "new"
+    elif pages:
+        state = "ingested"
+    else:
+        state = "staged"
+    return {"path": rel(path), "sha256": h, "state": state,
+            "source": src, "pages": pages}
+
+
+# ---------------------------------------------------------------- derivation
+
+def speaker_slug(speaker):
+    """Surname (or well-known short form), used CONSISTENTLY — so an existing
+    page for the same speaker wins over the derivation rule (SPEC §5)."""
+    for path in lib.iter_page_paths():
+        try:
+            fields, _b, errs, _w = lib.parse_frontmatter(lib.read_text(path))
+        except lib.SpecError:
+            continue
+        if errs or fields.get("speaker") != speaker:
+            continue
+        parts = os.path.basename(path)[:-3].split("-")
+        if len(parts) > 3:                      # YYYY-MM-DD-<slug>-...
+            return parts[3]
+    return lib.slugify(speaker.split()[-1]) if speaker.split() else "unknown"
+
+
+def passage_slug(keys):
+    """Primary key -> filename slug: acts-19-20, romans-8-28-30, mark-4."""
+    if not keys:
+        return None
+    parsed = [(k, lib.parse_key(k)) for k in keys]
+    book = parsed[0][1]["book"]
+    same = [(k, p) for k, p in parsed if p["book"] == book]
+    bslug = lib.book_slug(book)
+    chs = sorted({p["ch"] for _k, p in same if p["ch"]})
+    if not chs:
+        return bslug
+    if len(chs) > 1:
+        return "%s-%d-%d" % (bslug, chs[0], chs[-1])
+    p = same[0][1]
+    if len(same) == 1 and p["v1"]:
+        s = "%s-%d-%d" % (bslug, p["ch"], p["v1"])
+        return s + ("-%d" % p["v2"] if p["v2"] else "")
+    return "%s-%d" % (bslug, chs[0])
+
+
+def date_from_name(path):
+    stem = os.path.basename(path)[:11]
+    return stem[:10] if lib.DATE_RE.match(stem[:10]) else None
+
+
+def split_passages(values):
+    out = []
+    for v in values or []:
+        out += [p.strip() for p in v.split(";") if p.strip()]
+    return out
+
+
+def build_plan(args, item):
+    """Pure derivation: same inputs -> same paths, no filesystem writes."""
+    missing = []
+    ptype = args.type
+    if ptype not in TYPE_DIR:
+        return None, ["--type must be one of %s" % "/".join(sorted(TYPE_DIR))]
+    date = args.date or date_from_name(item)
+    if not date:
+        missing.append("--date (not inferable from the filename)")
+    elif not lib.DATE_RE.match(date):
+        return None, ["--date must be ISO YYYY-MM-DD; got %r" % date]
+    if not args.title:
+        missing.append("--title")
+
+    passages, keys = [], []
+    for human in split_passages(args.passage):
+        try:
+            k = lib.parse_human_ref(human)
+        except lib.SpecError as e:
+            return None, [str(e)]
+        keys.append(k)
+        passages.append(lib.human_ref(k))       # normalized, so they agree
+
+    if ptype == "sermon":
+        for flag, val in (("--speaker", args.speaker), ("--venue", args.venue),
+                          ("--medium", args.medium)):
+            if not val:
+                missing.append(flag)
+        if not keys:
+            missing.append("--passage (at least one)")
+    if ptype == "resource" and not args.medium:
+        missing.append("--medium")
+    if args.medium and args.medium not in lib.MEDIUM_ENUM:
+        return None, ["--medium must be one of %s" % "/".join(lib.MEDIUM_ENUM)]
+    if missing:
+        return None, missing
+
+    pslug = passage_slug(keys)
+    if ptype == "sermon":
+        stem = "%s-%s-%s" % (date, speaker_slug(args.speaker), pslug)
+    elif ptype == "resource":
+        who = args.speaker or args.title
+        stem = "%s-%s" % (date, lib.slugify(who))
+    else:
+        stem = "%s-%s" % (date, pslug or lib.slugify(args.title))
+
+    fields = [("type", ptype), ("title", args.title)]
+    for key, val in (("speaker", args.speaker), ("venue", args.venue),
+                     ("medium", args.medium)):
+        if val:
+            fields.append((key, val))
+    fields.append(("date", date))
+    if args.series:
+        fields.append(("series", args.series))
+    if keys:
+        fields.append(("passages", passages))
+        fields.append(("passage_keys", keys))
+    if args.tag:
+        fields.append(("tags", [lib.slugify(t) for t in args.tag]))
+    source_rel = os.path.join("sources", date[:4], "%s.md" % stem)
+    fields.append(("source", source_rel))
+
+    return {
+        "type": ptype,
+        "stem": stem,
+        "date": date,
+        "source": source_rel,
+        "page": os.path.join(TYPE_DIR[ptype], "%s.md" % stem),
+        "passages": passages,
+        "passage_keys": keys,
+        "fields": fields,
+    }, []
+
+
+# ---------------------------------------------------------------- scaffolding
+
+def fm_value(v):
+    if isinstance(v, list):
+        return "[%s]" % ", ".join(fm_value(x) for x in v)
+    if any(c in v for c in ':[]",'):
+        return '"%s"' % v.replace('"', '\\"')
+    return v
+
+
+def scaffold(plan):
+    lines = ["---"]
+    for key, val in plan["fields"]:
+        lines.append("%s: %s" % (key, fm_value(val)))
+    lines += ["---", "",
+              "%s one-paragraph summary of the argument." % TODO_MARKER, ""]
+    for section in lib.SECTIONS:
+        lines += ["## %s" % lib.SECTION_TITLES[section], ""]
+    lines += ["%s delete every section judged absent and list it in "
+              "sections_absent." % TODO_MARKER, ""]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- readiness
+
+def check_page(page_rel):
+    """Is the judgment step actually finished? Mechanical gate before finish."""
+    full = os.path.join(lib.ROOT, page_rel)
+    if not os.path.exists(full):
+        return {"page": page_rel, "ready": False,
+                "problems": ["page does not exist"]}
+    text = lib.read_text(full)
+    fields, body, errs, _w = lib.parse_frontmatter(text)
+    problems = ["frontmatter %d: %s" % (n, m) for n, m in errs]
+    present, entry_count = set(), 0
+    sections_with_entries = set()
+    for section, _h, slines in lib.iter_sections(body):
+        if section is None:
+            continue
+        present.add(section)
+        for _n, line in slines:
+            if line.startswith("- ") and lib.parse_entry(line):
+                entry_count += 1
+                sections_with_entries.add(section)
+    absent = set(lib.as_list(fields.get("sections_absent")))
+    if TODO_MARKER in text:
+        problems.append("page still contains %s placeholders" % TODO_MARKER)
+    if not entry_count:
+        problems.append("page has no entries")
+    empty = sorted(present - sections_with_entries)
+    if empty:
+        problems.append("section(s) present but empty: %s — write entries or "
+                        "list them in sections_absent" % ", ".join(empty))
+    unjudged = sorted(set(lib.SECTIONS) - present - absent)
+    if unjudged:
+        problems.append("section(s) neither written nor judged absent: %s"
+                        % ", ".join(unjudged))
+    return {
+        "page": page_rel,
+        "ready": not problems,
+        "problems": problems,
+        "entries": entry_count,
+        "sections_written": sorted(sections_with_entries),
+        "sections_absent": sorted(absent),
+        "questions": sum(1 for s, _h, sl in lib.iter_sections(body)
+                         if s == "question"
+                         for _n, ln in sl if ln.startswith("- ")),
+    }
+
+
+# ---------------------------------------------------------------- pipeline
+
+def run(cmd, label, optional=False):
+    print("ingest: %s" % label, file=sys.stderr)
+    proc = subprocess.run([sys.executable] + cmd, cwd=lib.ROOT)
+    if proc.returncode and not optional:
+        return proc.returncode
+    return 0
+
+
+def resolve_page(path):
+    """Accept an inbox item, a sources/ path, or the page itself."""
+    r = rel(path)
+    if r.split(os.sep)[0] in lib.CONTENT_DIRS:
+        return r
+    src = r
+    if r.split(os.sep)[0] != "sources":
+        if not os.path.exists(path):
+            return None
+        src = source_by_hash(content_hash(path))
+        if not src:
+            return None
+    pages = pages_referencing(src)
+    return pages[0] if pages else None
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_status(args):
+    paths = args.paths or ([os.path.join(INBOX, n)
+                            for n in sorted(os.listdir(INBOX))
+                            if n.endswith(".md")] if os.path.isdir(INBOX) else [])
+    items = []
+    for p in paths:
+        if not os.path.exists(p):
+            return die("no such file: %s" % p)
+        items.append(item_state(p))
+    emit({"inbox": items,
+          "blocked": [i["path"] for i in items
+                      if lib.read_text(os.path.join(lib.ROOT, i["path"]))
+                      .startswith("NEEDS-INFO:")]})
+    return 1 if any(i["state"] == "ingested" for i in items) else 0
+
+
+def cmd_plan(args):
+    plan, problems = build_plan(args, args.path)
+    if plan is None:
+        emit({"ok": False, "missing": problems})
+        return 1
+    emit({"ok": True, "plan": {k: v for k, v in plan.items() if k != "fields"}})
+    return 0
+
+
+def cmd_stage(args):
+    if not os.path.exists(args.path):
+        return die("no such file: %s" % args.path)
+    plan, problems = build_plan(args, args.path)
+    if plan is None:
+        emit({"ok": False, "missing": problems})
+        return 1
+    text = lib.read_text(args.path)
+    src_full = os.path.join(lib.ROOT, plan["source"])
+    page_full = os.path.join(lib.ROOT, plan["page"])
+    actions = {}
+    # 1. The transcript lands in sources/ FIRST — it is the retained source of
+    #    record, and anchors resolve against it (CLAUDE.md ingestion step 1).
+    if os.path.exists(src_full):
+        actions["source"] = ("unchanged" if lib.read_text(src_full) == text
+                             else "exists-with-different-content")
+        if actions["source"] != "unchanged":
+            emit({"ok": False, "source": plan["source"],
+                  "error": "a different transcript already occupies this path"})
+            return 1
+    else:
+        lib.atomic_write(src_full, text)
+        actions["source"] = "written"
+    # 2. Scaffold the page — never overwrite one, so a resumed run keeps work.
+    if os.path.exists(page_full):
+        actions["page"] = "exists-kept"
+    else:
+        lib.atomic_write(page_full, scaffold(plan))
+        actions["page"] = "scaffolded"
+    emit({"ok": True, "actions": actions, "source": plan["source"],
+          "page": plan["page"], "passage_keys": plan["passage_keys"],
+          "paragraphs": len(lib.paragraphs(text)),
+          "next": "write entries into %s, then scripts/ingest finish %s"
+                  % (plan["page"], plan["page"])})
+    return 0
+
+
+def cmd_check(args):
+    page = resolve_page(args.path)
+    if not page:
+        return die("no processed page found for %s (run stage first)" % args.path)
+    result = check_page(page)
+    emit(result)
+    return 0 if result["ready"] else 1
+
+
+def cmd_finish(args):
+    page = resolve_page(args.path)
+    if not page:
+        return die("no processed page found for %s (run stage first)" % args.path)
+    result = check_page(page)
+    if not result["ready"]:
+        emit(result)
+        return die("page is not ready to finish")
+
+    rc = run(["scripts/validate"] + (["--strict"] if args.strict else []),
+             "validate")
+    if rc:
+        return die("validate failed — fix errors before finishing")
+    rc = run(["scripts/generate"], "generate")
+    if rc:
+        return die("generate failed")
+    run(["scripts/search", "--reindex"], "search --reindex", optional=True)
+
+    # The inbox item is cleared LAST, and only when its content is provably the
+    # transcript we retained — never delete something that was not ingested.
+    cleared = None
+    fields, _b, _e, _w = lib.parse_frontmatter(
+        lib.read_text(os.path.join(lib.ROOT, page)))
+    src_rel = fields.get("source")
+    if not args.keep_inbox and src_rel and os.path.isdir(INBOX):
+        src_hash = content_hash(os.path.join(lib.ROOT, src_rel))
+        for name in sorted(os.listdir(INBOX)):
+            full = os.path.join(INBOX, name)
+            if not name.endswith(".md"):
+                continue
+            try:
+                if content_hash(full) == src_hash:
+                    os.unlink(full)
+                    cleared = rel(full)
+            except lib.SpecError:
+                continue
+
+    print("")
+    print("ingest: %s" % page)
+    print("  sections written: %s" % (", ".join(result["sections_written"]) or "—"))
+    print("  sections absent:  %s" % (", ".join(result["sections_absent"]) or "—"))
+    print("  entries: %d · questions raised: %d"
+          % (result["entries"], result["questions"]))
+    print("  source:  %s" % src_rel)
+    print("  inbox:   %s" % (("cleared %s" % cleared) if cleared
+                             else "nothing to clear"))
+    print("  next:    review the diff, then commit")
+    return 0
+
+
+def cmd_needs_info(args):
+    if not os.path.exists(args.path):
+        return die("no such file: %s" % args.path)
+    text = lib.read_text(args.path)
+    line = "NEEDS-INFO: %s" % args.reason
+    if text.startswith("NEEDS-INFO:"):
+        text = text.split("\n", 1)[1].lstrip("\n")
+    lib.atomic_write(os.path.abspath(args.path), "%s\n\n%s" % (line, text))
+    emit({"ok": True, "path": rel(args.path), "reason": args.reason})
+    return 0
+
+
+def meta_flags(p):
+    p.add_argument("--type", choices=sorted(TYPE_DIR))
+    p.add_argument("--title")
+    p.add_argument("--date")
+    p.add_argument("--speaker")
+    p.add_argument("--venue")
+    p.add_argument("--medium", choices=list(lib.MEDIUM_ENUM))
+    p.add_argument("--series")
+    p.add_argument("--passage", action="append", default=[],
+                   help="human passage ref; repeatable, or ';'-separated")
+    p.add_argument("--tag", action="append", default=[])
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(
+        prog="scripts/ingest", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--strict", action="store_true",
+                    help="promote warnings to errors")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("status", help="state of inbox items (JSON)")
+    p.add_argument("paths", nargs="*")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("plan", help="derive paths and keys; no writes (JSON)")
+    p.add_argument("path")
+    meta_flags(p)
+    p.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser("stage", help="copy to sources/, scaffold the page")
+    p.add_argument("path")
+    meta_flags(p)
+    p.set_defaults(fn=cmd_stage)
+
+    p = sub.add_parser("check", help="is the page ready to finish? (JSON)")
+    p.add_argument("path")
+    p.set_defaults(fn=cmd_check)
+
+    p = sub.add_parser("finish", help="validate, generate, reindex, clear inbox")
+    p.add_argument("path")
+    p.add_argument("--keep-inbox", action="store_true")
+    p.set_defaults(fn=cmd_finish)
+
+    p = sub.add_parser("needs-info", help="mark a blocked inbox item")
+    p.add_argument("path")
+    p.add_argument("--reason", required=True)
+    p.set_defaults(fn=cmd_needs_info)
+
+    args = ap.parse_args(argv)
+    try:
+        return args.fn(args)
+    except lib.SpecError as e:
+        return die(str(e))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

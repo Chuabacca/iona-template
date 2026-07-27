@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""search — fully local semantic search over the corpus. No API keys.
+
+Usage:
+  scripts/search "query text" [-k N]     query the index (default top 8)
+  scripts/search --reindex               refresh the index (stale chunks only)
+  scripts/search --help
+Index: .iona-index/ (gitignored, derived, rebuildable). Model:
+BAAI/bge-small-en-v1.5 via sentence-transformers (installed by scripts/setup
+--ml). Chunks = entry lines + page summaries + study paragraphs, with page,
+section, and passage-key metadata. Exit 0 on success, 1 on errors.
+"""
+
+import hashlib
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lib  # noqa: E402
+
+INDEX_DIR = os.path.join(lib.ROOT, ".iona-index")
+META_PATH = os.path.join(INDEX_DIR, "meta.json")
+EMB_PATH = os.path.join(INDEX_DIR, "embeddings.npy")
+MODEL = "BAAI/bge-small-en-v1.5"
+
+
+def fail(problem, cause, fix):
+    print("ERROR: %s\n  cause: %s\n  fix: %s" % (problem, cause, fix), file=sys.stderr)
+    return 1
+
+
+def ensure_st():
+    try:
+        import sentence_transformers  # noqa: F401
+        return None
+    except ImportError:
+        venv_py = os.path.join(lib.ROOT, ".venv", "bin", "python3")
+        if os.path.exists(venv_py) and os.path.abspath(sys.executable) != venv_py:
+            os.execv(venv_py, [venv_py] + sys.argv)
+        return fail(
+            "sentence-transformers is not installed",
+            "semantic search needs a local embedding model",
+            "run scripts/setup --ml")
+
+
+def collect_chunks():
+    chunks = []
+    for path in lib.iter_page_paths():
+        rel = os.path.relpath(path, lib.ROOT)
+        try:
+            text = lib.read_text(path)
+        except lib.SpecError:
+            continue
+        fields, body, fm_errors, _ = lib.parse_frontmatter(text)
+        if fm_errors:
+            continue
+        title = fields.get("title", rel)
+        paras = lib.paragraphs(body)
+        if paras and not paras[0].startswith("#"):
+            chunks.append({"file": rel, "section": "summary", "keys": [],
+                           "text": "%s — %s" % (title, paras[0])})
+        for section, _h, lines in lib.iter_sections(body):
+            if section is None:
+                continue
+            for _n, line in lines:
+                if line.startswith("- "):
+                    e = lib.parse_entry(line)
+                    if e and e["prose"]:
+                        chunks.append({"file": rel, "section": section,
+                                       "keys": e["keys"], "text": e["prose"]})
+    studies = os.path.join(lib.ROOT, "studies")
+    if os.path.isdir(studies):
+        for name in sorted(os.listdir(studies)):
+            if not name.endswith(".md"):
+                continue
+            rel = os.path.join("studies", name)
+            try:
+                text = lib.read_text(os.path.join(studies, name))
+            except lib.SpecError:
+                continue
+            for p in lib.paragraphs(text):
+                if not p.startswith("#") and len(p) > 60:
+                    chunks.append({"file": rel, "section": "study", "keys": [],
+                                   "text": p[:1000]})
+    for c in chunks:
+        c["hash"] = hashlib.sha256(
+            ("%s|%s|%s" % (c["file"], c["section"], c["text"])).encode()).hexdigest()[:16]
+    return chunks
+
+
+def reindex():
+    rc = ensure_st()
+    if rc:
+        return rc
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    chunks = collect_chunks()
+    old_meta, old_emb = [], None
+    if os.path.exists(META_PATH) and os.path.exists(EMB_PATH):
+        with open(META_PATH, encoding="utf-8") as f:
+            old = json.load(f)
+        if old.get("model") == MODEL:
+            old_meta = old.get("chunks", [])
+            old_emb = np.load(EMB_PATH)
+    by_hash = {c["hash"]: i for i, c in enumerate(old_meta)}
+    todo = [c for c in chunks if c["hash"] not in by_hash]
+    print("search: %d chunks (%d new/stale to embed)" % (len(chunks), len(todo)))
+    model = SentenceTransformer(MODEL)
+    if todo:
+        new_emb = model.encode([c["text"] for c in todo],
+                               normalize_embeddings=True, show_progress_bar=False)
+    rows = []
+    j = 0
+    for c in chunks:
+        if c["hash"] in by_hash:
+            rows.append(old_emb[by_hash[c["hash"]]])
+        else:
+            rows.append(new_emb[j])
+            j += 1
+    os.makedirs(INDEX_DIR, exist_ok=True)
+    np.save(EMB_PATH, np.array(rows))
+    with open(META_PATH, "w", encoding="utf-8") as f:
+        json.dump({"model": MODEL, "chunks": chunks}, f)
+    print("search: index updated (%d vectors)" % len(rows))
+    return 0
+
+
+def query(q, k):
+    rc = ensure_st()
+    if rc:
+        return rc
+    if not (os.path.exists(META_PATH) and os.path.exists(EMB_PATH)):
+        return fail("no index found", "the corpus has not been indexed yet",
+                    "run scripts/search --reindex")
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    with open(META_PATH, encoding="utf-8") as f:
+        meta = json.load(f)
+    emb = np.load(EMB_PATH)
+    model = SentenceTransformer(meta["model"])
+    qv = model.encode([q], normalize_embeddings=True)[0]
+    sims = emb @ qv
+    order = sims.argsort()[::-1][:k]
+    try:
+        pk = lib.parse_human_ref(q)
+        print("(also structural: scripts/passage-key --expand %r → grep keys)" % pk)
+    except lib.SpecError:
+        pass
+    for i in order:
+        c = meta["chunks"][i]
+        keys = " ".join(c["keys"])
+        print("%.3f  %s [%s]%s\n       %s" % (
+            sims[i], c["file"], c["section"],
+            (" " + keys) if keys else "", c["text"][:160]))
+    return 0
+
+
+def main(argv):
+    if "--help" in argv:
+        print(__doc__)
+        return 0
+    if "--reindex" in argv:
+        return reindex()
+    k = 8
+    if "-k" in argv:
+        i = argv.index("-k")
+        k = int(argv[i + 1])
+        argv = argv[:i] + argv[i + 2:]
+    if not argv:
+        print(__doc__)
+        return 1
+    return query(" ".join(argv), k)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

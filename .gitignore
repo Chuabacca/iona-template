@@ -1,0 +1,29 @@
+.iona-index/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Scripture text store — deny by default, allow only public-domain versions.
+# The BSB is dedicated to the public domain by its publisher, so it is
+# committed. Every other translation is copyrighted: it stays on this machine
+# and is never pushed. Adding scripture/_text/<version>/ is protected
+# automatically; scripts/validate warns if a non-PD version escapes this rule.
+scripture/_text/*
+!scripture/_text/.gitkeep
+!scripture/_text/.default
+!scripture/_text/bsb/
+
+# Source audio is a transient ingestion input, not a kept artifact. Policy:
+# after ingestion, only the created artifacts (transcript + generated pages)
+# are retained; the raw recording is discarded. This is a safety net so audio
+# can never be committed even mid-run, in inbox/ or sources/.
+*.m4a
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+*.mp4
+*.mov
+*.webm

@@ -1,0 +1,18 @@
+#!/bin/sh
+# iona pre-commit hook: validate must pass; generated pages must be current.
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+python3 scripts/validate || {
+  echo "pre-commit: validate failed — fix errors (or use validate_skip per SPEC §2)." >&2
+  exit 1
+}
+
+python3 scripts/generate >/dev/null
+
+if ! git diff --quiet -- scripture speakers series topics/_generated INDEX.md 2>/dev/null; then
+  echo "pre-commit: generated pages were stale; scripts/generate refreshed them." >&2
+  echo "Review and 'git add' the regenerated files, then commit again." >&2
+  exit 1
+fi

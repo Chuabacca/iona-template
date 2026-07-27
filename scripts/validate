@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""validate — read-only checks for the iona corpus (SPEC.md is normative).
+
+Usage: scripts/validate [--strict] [--help]
+Exit 0 on success (warnings on stderr), 1 on errors. --strict promotes
+warnings to errors. Never mutates any file.
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lib  # noqa: E402
+
+errors = []
+warnings = []
+
+
+def err(path, line, msg, skips=(), check=None):
+    rel = os.path.relpath(path, lib.ROOT) if os.path.isabs(path) else path
+    if check and check in skips:
+        warnings.append("%s:%s: [suppressed %s] %s" % (rel, line, check, msg))
+    else:
+        errors.append("%s:%s: %s" % (rel, line, msg))
+
+
+def warn(path, line, msg):
+    rel = os.path.relpath(path, lib.ROOT) if os.path.isabs(path) else path
+    warnings.append("%s:%s: %s" % (rel, line, msg))
+
+
+FILENAME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md$")
+LOCAL_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+
+
+def body_offset(text):
+    lines = text.split("\n")
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return i + 1
+    return 0
+
+
+def check_page(path, speakers, tags_seen):
+    try:
+        text = lib.read_text(path)
+    except lib.SpecError as e:
+        err(path, 0, str(e))
+        return
+    fields, body, fm_errors, fm_warnings = lib.parse_frontmatter(text)
+    for line, msg in fm_errors:
+        err(path, line, msg)
+    for line, msg in fm_warnings:
+        warn(path, line, msg)
+    if fm_errors:
+        return
+    off = body_offset(text)
+    skips = tuple(lib.as_list(fields.get("validate_skip")))
+    for s in skips:
+        if s not in lib.VALIDATE_SKIP_CHECKS:
+            warn(path, 0, "unknown validate_skip check %r" % s)
+
+    ptype = fields.get("type")
+    if ptype not in lib.REQUIRED_FIELDS:
+        err(path, 0, "type must be one of %s; got %r"
+            % ("/".join(lib.REQUIRED_FIELDS), ptype))
+        return
+    for f in lib.REQUIRED_FIELDS[ptype]:
+        if f not in fields:
+            err(path, 0, "missing required field %r for type %s" % (f, ptype))
+    date = fields.get("date", "")
+    if isinstance(date, str) and date and not lib.DATE_RE.match(date):
+        err(path, 0, "date must be ISO YYYY-MM-DD; got %r" % date)
+    medium = fields.get("medium")
+    if medium is not None and medium not in lib.MEDIUM_ENUM:
+        err(path, 0, "medium must be one of %s; got %r"
+            % ("/".join(lib.MEDIUM_ENUM), medium))
+
+    # passages / passage_keys
+    keys = lib.as_list(fields.get("passage_keys"))
+    passages = lib.as_list(fields.get("passages"))
+    v_ok = set(lib.as_list(fields.get("versification_ok")))
+    parsed_keys = []
+    for k in keys:
+        try:
+            lib.parse_key(k)
+            parsed_keys.append(k)
+            for w in lib.verse_range_warnings(k):
+                if k not in v_ok:
+                    warn(path, 0, w)
+        except lib.SpecError as e:
+            err(path, 0, str(e))
+    if bool(keys) != bool(passages):
+        err(path, 0, "passages and passage_keys must both be present or both absent",
+            skips, "passages-consistency")
+    elif keys:
+        derived = []
+        for p in passages:
+            try:
+                derived.append(lib.parse_human_ref(p))
+            except lib.SpecError as e:
+                err(path, 0, "passages: %s" % e, skips, "passages-consistency")
+        if sorted(derived) != sorted(keys) and derived:
+            err(path, 0, "passages %s != passage_keys %s (derived %s)"
+                % (passages, keys, derived), skips, "passages-consistency")
+
+    # source link
+    source = fields.get("source")
+    if source:
+        if not os.path.exists(os.path.join(lib.ROOT, source)):
+            err(path, 0, "source path does not resolve: %r" % source,
+                skips, "link-resolution")
+
+    # local markdown links
+    for m in LOCAL_LINK_RE.finditer(body):
+        target = m.group(1).split("#")[0]
+        if not target or "://" in target or target.startswith("mailto:"):
+            continue
+        cand = os.path.normpath(os.path.join(os.path.dirname(path), target))
+        cand2 = os.path.normpath(os.path.join(lib.ROOT, target))
+        if not (os.path.exists(cand) or os.path.exists(cand2)):
+            err(path, 0, "link does not resolve: %r" % target,
+                skips, "link-resolution")
+
+    # sections_absent
+    absent = lib.as_list(fields.get("sections_absent"))
+    present = {sec for sec, _, _ in lib.iter_sections(body)}
+    for a in absent:
+        if a not in lib.SECTIONS:
+            err(path, 0, "sections_absent: unknown section %r" % a)
+        elif a in present:
+            err(path, 0, "section %r listed absent but present in body" % a)
+
+    # entries. Anchors are required whenever the page paraphrases someone
+    # else's words and we hold those words — which is a question of medium, not
+    # of page type: notes taken on a book need anchoring just as a sermon does,
+    # while the owner's own notes are already in their own words (SPEC §4).
+    anchors_required = bool(source) and medium != lib.UNANCHORED_MEDIUM
+    source_paras = None
+    if source and os.path.exists(os.path.join(lib.ROOT, source)):
+        try:
+            source_paras = lib.paragraphs(lib.read_text(os.path.join(lib.ROOT, source)))
+        except lib.SpecError:
+            source_paras = None
+    for section, h_line, lines in lib.iter_sections(body):
+        if section is None:
+            continue
+        section_has_anchor = False
+        for line_no, line in lines:
+            abs_line = off + line_no
+            if "› [source ¶" in line:
+                err(path, abs_line,
+                    "positional-only anchor forbidden (SPEC §4): use › [¶N \"quote\"]")
+                continue
+            if not line.startswith("- "):
+                continue
+            entry = lib.parse_entry(line)
+            if entry is None:
+                err(path, abs_line, "line does not match entry grammar (SPEC §4)",
+                    skips, "entry-grammar")
+                continue
+            for k in entry["keys"]:
+                try:
+                    lib.parse_key(k)
+                    for w in lib.verse_range_warnings(k):
+                        if k not in v_ok:
+                            warn(path, abs_line, w)
+                except lib.SpecError as e:
+                    err(path, abs_line, str(e))
+            if section in ("exegesis", "application") and not entry["keys"]:
+                err(path, abs_line,
+                    "%s entries require >=1 passage key (SPEC §4)" % section,
+                    skips, "entry-grammar")
+            if entry["para"] is not None:
+                section_has_anchor = True
+                if source_paras is None:
+                    err(path, abs_line, "anchor present but source unreadable/absent",
+                        skips, "anchor-resolution")
+                elif entry["para"] > len(source_paras):
+                    err(path, abs_line,
+                        "anchor ¶%d out of range (source has %d paragraphs)"
+                        % (entry["para"], len(source_paras)),
+                        skips, "anchor-resolution")
+                elif entry["quote"] not in source_paras[entry["para"] - 1]:
+                    hint = ""
+                    for i, p in enumerate(source_paras, start=1):
+                        if entry["quote"] in p:
+                            hint = " (found in ¶%d)" % i
+                            break
+                    err(path, abs_line,
+                        "anchor quote not found in ¶%d%s" % (entry["para"], hint),
+                        skips, "anchor-resolution")
+            elif anchors_required:
+                warn(path, abs_line, "anchor-free entry on %s page" % ptype)
+        _ = section_has_anchor
+
+    # vocabulary collection + filename convention (content dirs only, not templates)
+    rel = os.path.relpath(path, lib.ROOT)
+    if rel.split(os.sep)[0] in lib.CONTENT_DIRS:
+        sp = fields.get("speaker")
+        if isinstance(sp, str) and sp:
+            speakers.setdefault(sp, []).append(rel)
+        for t in lib.as_list(fields.get("tags")):
+            tags_seen.setdefault(t, []).append(rel)
+        if not FILENAME_RE.match(os.path.basename(path)):
+            warn(path, 0, "filename does not match SPEC §5 slug convention")
+
+
+def check_text_store():
+    versions = lib.text_versions()
+    default = lib.default_text_version()
+    if versions and default not in versions:
+        warn("(repo)", 0,
+             "default text version %r is not present in scripture/_text/ "
+             "(have: %s)" % (default, ", ".join(versions)))
+    for v in versions:
+        if v not in lib.PUBLIC_DOMAIN_VERSIONS and not _is_gitignored(
+                os.path.join("scripture", "_text", v)):
+            warn("(repo)", 0,
+                 "text version %r is copyrighted but not gitignored — "
+                 "committing it would redistribute the translation" % v)
+    _check_version_files()
+
+
+def _is_gitignored(rel):
+    try:
+        out = subprocess.run(
+            ["git", "check-ignore", "-q", rel], cwd=lib.ROOT,
+            capture_output=True, text=True)
+        return out.returncode == 0
+    except OSError:
+        return True  # cannot tell; do not cry wolf
+
+
+def _check_version_files():
+    root = lib.TEXT_ROOT
+    by_code, _ = lib.load_books()
+    name_to_code = {b["name"].lower().replace(" ", "-"): c for c, b in by_code.items()}
+    for dirpath, _dirs, files in os.walk(root):
+        for name in sorted(files):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(dirpath, name)
+            book_dir = os.path.basename(dirpath)
+            code = name_to_code.get(book_dir)
+            if code is None:
+                err(path, 0, "unknown book directory %r in _text" % book_dir)
+                continue
+            try:
+                text = lib.read_text(path)
+            except lib.SpecError as e:
+                err(path, 0, str(e))
+                continue
+            ch = name[:-3]
+            if not ch.isdigit():
+                err(path, 0, "chapter filename must be zero-padded digits")
+                continue
+            last_v = 0
+            for i, line in enumerate(text.strip().split("\n"), start=1):
+                if not line.strip():
+                    continue
+                m = lib.VERSE_LINE_RE.match(line)
+                if not m:
+                    err(path, i, "not a verse line (SPEC §6): %r" % line[:60])
+                    continue
+                key = m.group(1)
+                try:
+                    p = lib.parse_key(key)
+                except lib.SpecError as e:
+                    err(path, i, str(e))
+                    continue
+                if p["book"] != code or p["ch"] != int(ch):
+                    err(path, i, "key %s does not belong in %s/%s" % (key, book_dir, name))
+                if p["v1"] <= last_v:
+                    err(path, i, "verse lines out of order at %s" % key)
+                last_v = p["v1"]
+
+
+def check_scripture_tree():
+    """Everything under scripture/ (outside _text/) is generated. The new
+    per-verse layout invites writing a note straight into a verse file, where
+    the next scripts/generate would silently delete it — so flag any file
+    there that does not carry the generated header."""
+    root = os.path.join(lib.ROOT, "scripture")
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d != "_text"]
+        for name in sorted(files):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                first = lib.read_text(path).split("\n", 1)[0]
+            except lib.SpecError as e:
+                err(path, 0, str(e))
+                continue
+            if first != lib.GENERATED_HEADER:
+                err(path, 0, "hand-written file under scripture/ — notes belong "
+                             "in %s and are projected onto verse pages by "
+                             "scripts/generate" % "/".join(lib.CONTENT_DIRS))
+
+
+def check_vocabulary(speakers, tags_seen):
+    names = sorted(speakers)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            la, lb = a.lower(), b.lower()
+            if la != lb and (la in lb or lb in la):
+                warn("(corpus)", 0,
+                     "speaker near-duplicate: %r vs %r — pick one spelling" % (a, b))
+    for t in sorted(tags_seen):
+        if not os.path.exists(os.path.join(lib.ROOT, "topics", "%s.md" % t)):
+            warn("(corpus)", 0,
+                 "tag %r has no topics/%s.md page (used in %s)"
+                 % (t, t, ", ".join(tags_seen[t][:3])))
+
+
+def check_hook():
+    try:
+        out = subprocess.run(
+            ["git", "config", "core.hooksPath"], cwd=lib.ROOT,
+            capture_output=True, text=True)
+        if out.stdout.strip() != "scripts/hooks":
+            warn("(repo)", 0,
+                 "pre-commit hook not active — run scripts/setup "
+                 "(git config core.hooksPath scripts/hooks)")
+    except OSError:
+        pass
+
+
+def main(argv):
+    if "--help" in argv:
+        print(__doc__)
+        return 0
+    strict = "--strict" in argv
+    speakers, tags_seen = {}, {}
+    for path in lib.iter_page_paths(include_templates=True):
+        check_page(path, speakers, tags_seen)
+    check_text_store()
+    check_scripture_tree()
+    check_vocabulary(speakers, tags_seen)
+    check_hook()
+    for w in warnings:
+        print("WARN: %s" % w, file=sys.stderr)
+    for e in errors:
+        print("ERROR: %s" % e, file=sys.stderr)
+    n_err = len(errors) + (len(warnings) if strict else 0)
+    print("validate: %d error(s), %d warning(s)%s"
+          % (len(errors), len(warnings), " [--strict]" if strict else ""))
+    return 1 if n_err else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

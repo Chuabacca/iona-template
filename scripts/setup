@@ -1,0 +1,33 @@
+#!/bin/sh
+# setup — activate git hooks; optionally install ML deps (transcription, search).
+#
+# Usage: scripts/setup [--ml] [--help]
+#   (no args)  activate pre-commit hook (git config core.hooksPath scripts/hooks)
+#   --ml       also create .venv and pip-install mlx-whisper + sentence-transformers
+# Exit 0 on success, 1 on errors.
+set -e
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [ "$1" = "--help" ]; then
+  sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+cd "$ROOT"
+git config core.hooksPath scripts/hooks
+chmod +x scripts/hooks/pre-commit scripts/validate scripts/generate \
+         scripts/passage-key scripts/transcribe scripts/search 2>/dev/null || true
+echo "setup: pre-commit hook active (core.hooksPath=scripts/hooks)"
+
+if [ "$1" = "--ml" ]; then
+  if [ ! -d .venv ]; then
+    echo "setup: creating .venv ..."
+    python3 -m venv .venv
+  fi
+  echo "setup: installing mlx-whisper + sentence-transformers (first run downloads models later) ..."
+  ./.venv/bin/pip install --quiet --upgrade pip
+  ./.venv/bin/pip install --quiet mlx-whisper sentence-transformers
+  echo "setup: ML deps installed. transcribe + search are ready."
+else
+  echo "setup: run 'scripts/setup --ml' to enable transcription and semantic search."
+fi

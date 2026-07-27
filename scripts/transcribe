@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""transcribe — local audio -> paragraph transcript via mlx-whisper.
+
+Usage: scripts/transcribe <audio-file> [--model NAME] [--out PATH] [--help]
+Default model: mlx-community/whisper-large-v3-turbo (downloaded from HF on
+first run). Output: <input-basename>.md next to the input (or --out), with
+blank-line-separated paragraphs (¶ addressing per SPEC §4).
+Exit 0 on success, 1 on errors. Problem + cause + fix on every failure path.
+"""
+
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
+AUDIO_EXTS = (".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".mp4", ".mov", ".webm")
+PARA_GAP_S = 2.0
+PARA_MAX_SEGS = 10
+
+
+def fail(problem, cause, fix):
+    print("ERROR: %s\n  cause: %s\n  fix: %s" % (problem, cause, fix), file=sys.stderr)
+    return 1
+
+
+def ensure_mlx():
+    try:
+        import mlx_whisper  # noqa: F401
+        return None
+    except ImportError:
+        venv_py = os.path.join(ROOT, ".venv", "bin", "python3")
+        if os.path.exists(venv_py) and os.path.abspath(sys.executable) != venv_py:
+            os.execv(venv_py, [venv_py] + sys.argv)
+        return fail(
+            "mlx-whisper is not installed",
+            "transcription needs the one ML dependency this repo uses",
+            "run scripts/setup --ml (creates .venv and installs it)")
+
+
+def segments_to_paragraphs(segments):
+    paras, cur, last_end = [], [], None
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start = seg.get("start", 0.0)
+        if cur and (
+            (last_end is not None and start - last_end > PARA_GAP_S)
+            or len(cur) >= PARA_MAX_SEGS
+        ):
+            paras.append(" ".join(cur))
+            cur = []
+        cur.append(text)
+        last_end = seg.get("end", start)
+    if cur:
+        paras.append(" ".join(cur))
+    return paras
+
+
+def main(argv):
+    if "--help" in argv or not argv:
+        print(__doc__)
+        return 0 if "--help" in argv else 1
+    model = DEFAULT_MODEL
+    out = None
+    args = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--model" and i + 1 < len(argv):
+            model = argv[i + 1]
+            i += 2
+        elif argv[i] == "--out" and i + 1 < len(argv):
+            out = argv[i + 1]
+            i += 2
+        else:
+            args.append(argv[i])
+            i += 1
+    if len(args) != 1:
+        return fail("expected exactly one audio file", "got %r" % args,
+                    "scripts/transcribe inbox/sermon.m4a")
+    src = args[0]
+    if not os.path.exists(src):
+        return fail("input file not found: %s" % src,
+                    "the path does not exist", "check the path")
+    if not src.lower().endswith(AUDIO_EXTS):
+        return fail("unsupported container: %s" % os.path.splitext(src)[1],
+                    "transcribe handles %s" % ", ".join(AUDIO_EXTS),
+                    "convert with: ffmpeg -i input.ext output.m4a")
+    rc = ensure_mlx()
+    if rc:
+        return rc
+    import mlx_whisper
+    print("transcribe: %s (model %s — first run downloads weights)" % (src, model))
+    try:
+        result = mlx_whisper.transcribe(src, path_or_hf_repo=model)
+    except Exception as e:  # model download, decode, or runtime failure
+        return fail("transcription failed", str(e),
+                    "check disk space / network for weight download, or try "
+                    "--model mlx-community/whisper-large-v3-mlx")
+    paras = segments_to_paragraphs(result.get("segments") or [])
+    if not paras:
+        return fail("empty transcription", "no speech segments were produced",
+                    "verify the file has audio; try a different --model")
+    out = out or os.path.splitext(src)[0] + ".md"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(paras) + "\n")
+    print("transcribe: wrote %s (%d paragraphs)" % (out, len(paras)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
