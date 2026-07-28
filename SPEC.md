@@ -208,9 +208,9 @@ scripture/<book>/<CCC>/<VVV>.md        verse page — the notes on that verse
 - Chapter-level keys (`ACT.19`) render in a `## Chapter` section on the chapter
   index, not on any verse page.
 
-These files are **projections**, not storage of record: notes are authored in
-`sermons/`, `notes/`, and `resources/`, anchored to `sources/`, and rebuilt onto
-verse pages by `scripts/generate`. Writing into `scripture/` by hand loses the
+These files are a **catalogue**, not the storage of record: notes are authored in
+`sermons/`, `notes/`, and `resources/`, anchored to `sources/`, and gathered
+under each verse by `scripts/generate`. Writing into `scripture/` by hand loses the
 edit at the next rebuild; `scripts/validate` errors on any file there lacking
 the generated header.
 

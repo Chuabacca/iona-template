@@ -107,7 +107,7 @@ Read the staged transcript in `sources/`. Then fill the scaffolded page:
 - Exegesis and Application entries require ≥1 passage key. Sermon and resource
   entries require an anchor, and the quote must appear **verbatim** in
   paragraph N of the source — copy it, never retype it from memory.
-- Key each entry as narrowly as the claim allows. A range key (`ACT.19.8-10`)
+- Key each entry as narrowly as the text allows. A range key (`ACT.19.8-10`)
   stores the note once, at its first verse; the other verses get an automatic
   pointer back. Prefer narrow keys, so notes land on the verse they are about.
 - Delete every section you judge absent and list it in `sections_absent`. An
@@ -150,7 +150,7 @@ conventional message: `ingest: <speaker-slug> <date> <passage>`.
 
 - Never write into `scripture/`, `speakers/`, `series/`, `topics/_generated/`,
   or `INDEX.md` by hand — notes live in `sermons/`, `notes/`, `resources/` and
-  are projected onto verse pages by `scripts/generate`.
+  are gathered under each verse by `scripts/generate`.
 - Never edit `CLAUDE.md`, `HERMENEUTICS.md`, `SPEC.md`, or `scripts/` during an
   ingestion run.
 - Never delete an inbox item yourself — `finish` does it, and only once the

@@ -10,7 +10,7 @@ Scripture is the authoritative, inerrant word of God, and it is the believer's t
 to study it faithfully. This is the conviction behind this project. Iona allows the text
 to anchor the learning process while leveraging AI as an assistant.
 
-- **Every claim is keyed to a verse.** Notes do not float free of the passage
+- **Every insight is keyed to a verse.** Notes do not float free of the passage
   they came from.
 - **Every paraphrase carries a verbatim quote anchor** back to the words that
   produced it, and `scripts/validate` checks the quote is still there. Nothing
@@ -26,69 +26,86 @@ to anchor the learning process while leveraging AI as an assistant.
 
 A template for building a personal, git-versioned store of scripture knowledge.
 You drop in a sermon recording, a transcript, or your own study notes. An AI
-agent reads it, breaks it into individual claims, keys each claim to the verse
-it is about, and anchors it to the exact words that produced it. Everything is
+agent reads it, draws out the individual insights, keys each one to the verse it
+came from, and anchors it to the exact words that produced it. Everything is
 plain markdown in a git repository you own.
 
 The organizing idea: **notes are authored where they can be checked, and
-projected where they can be found.**
+catalogued where they can be found.**
 
 - You author in `sermons/`, `notes/` and `resources/` — one page per source.
-- `scripts/generate` projects every entry onto **one markdown file per verse**:
-  `scripture/<book>/<chapter>/<verse>.md`.
+- `scripts/generate` catalogues every insight under the verse it came from —
+  **one markdown file per verse**: `scripture/<book>/<chapter>/<verse>.md`.
 
 So a verse you have studied for ten years across thirty sermons is still *one
-file*, with everything ever said about it grouped by category. And because verse
-pages are generated rather than written, they cannot drift from what your
-sources actually said.
+file*, holding everything ever recorded about it, grouped by category. And
+because verse pages are generated rather than written, they cannot drift from
+what your sources actually said.
 
 ### What that looks like
 
-A paragraph in a transcript you dropped in `inbox/`:
+A preacher working through Acts 19, transcribed into `inbox/`:
 
-> **¶2** The verb there is sunergeo. It does not say that all things are good.
-> It says that God is working them together, which is a claim about his agency
-> and not about the quality of the circumstances.
+> **¶13** … And then verse 9. But some of them became hardened or were becoming
+> hardened and were not believing. And they were speaking evil of the way for
+> the multitude. And so Paul left them and he took the disciples away with him.
+> And he was reasoning in the school of Tyrannus, reasoning daily. And then
+> verse 10. This took place for a period of two years.
 
 The agent writes this line onto the sermon's page in `sermons/`:
 
 ```
-- `[ROM.8.28]` The verb sunergeo claims that God works circumstances together;
-  the verse does not say the circumstances are themselves good › [¶2 "It does
-  not say that all things are good."]
+- `[ACT.19.9]` When the synagogue hardened, Paul withdrew the disciples and
+  taught them separately and daily — the training moves out of the synagogue
+  but continues › [¶13 "And so Paul left them and he took the disciples away
+  with him. And he was reasoning in the school of Tyrannus, reasoning daily"]
 ```
 
-Three things are happening in that one line: `[ROM.8.28]` is the **verse key**,
-the prose is the agent's **paraphrase**, and `› [¶2 "…"]` is the **anchor** —
-paragraph 2 of the source, quoted verbatim.
+Three things are happening in that one line. `[ACT.19.9]` is the **verse key**,
+narrowed to the verse the observation actually rests on. The prose states what
+the text says — the movement from synagogue to lecture hall, and the fact that
+the teaching *continues* rather than stopping. And `› [¶13 "…"]` is the
+**anchor**: paragraph 13 of the transcript, quoted verbatim, so the reading can
+always be checked against the words that produced it.
 
-Then `scripts/generate` produces `scripture/romans/008/028.md`:
+Then `scripts/generate` catalogues it under `scripture/acts/019/009.md`:
 
 ```markdown
-# Romans 8:28
+# Acts 19:9
 
-`ROM.8.28` · [Romans 8](index.md)
+`ACT.19.9` · [Acts 19](index.md) · [← v8](008.md) · [v10 →](010.md)
 
-> And we know that God works all things together for the good of those who love
-> Him, who are called according to His purpose. (BSB)
+> But when some of them stubbornly refused to believe and publicly maligned the
+> Way, Paul took his disciples and left the synagogue to conduct daily
+> discussions in the lecture hall of Tyrannus. (BSB)
 
 ## Exegesis
 
-- The verb sunergeo claims that God works circumstances together; the verse does
-  not say the circumstances are themselves good — [All Things Together](…) · 2026-08-02
+- When the synagogue hardened, Paul withdrew the disciples and taught them
+  separately and daily — the training moves out of the synagogue but continues
+  — [Lectures, Leaders, and Lost Love](…) · 2026-07-19
+
+## Also referenced
+
+- `[ACT.19.8-10]` note at [v8](008.md) · [Lectures, Leaders, and Lost Love](…)
 
 ## Cross-references
 
-1PE.5.10, JAS.1.12, GEN.50.20, ROM.5.3-5, 1CO.2.9, ROM.8.35-39, …
+ACT.19.23, ACT.9.2, 2PE.2.12, ACT.14.4, ACT.18.6-8, 1TI.6.5, 2PE.2.2, …
 ```
+
+Note the **Also referenced** line. A note keyed to a range — here `ACT.19.8-10`,
+about the two years in the hall of Tyrannus — is stored once, under the first
+verse of its range, and the other verses carry a pointer to it. Nothing is
+duplicated, and nothing is lost when you arrive at v9 from a different direction.
 
 The anchor is what makes this trustworthy rather than merely tidy. Because every
 paraphrase names the paragraph it came from and quotes it, `scripts/validate`
-can check the quote is still there. Fix a typo in a transcript and the validator
-tells you immediately which entries you just invalidated:
+can check the quote is still there. Correct a mis-transcribed word and the
+validator tells you immediately which entries you just invalidated:
 
 ```
-ERROR: sermons/2026-08-02-example-romans-8-28.md:19: anchor quote not found in ¶2
+ERROR: sermons/2026-07-19-busenitz-acts-19-20.md:28: anchor quote not found in ¶13
 ```
 
 Nothing calls an API. No data leaves your machine.
@@ -188,7 +205,7 @@ reviewing, so it's worth knowing what belongs where:
 | **History** | background, cultural and grammatical context, how the passage has been received |
 | **Doctrine** | how the text connects to systematic theology |
 | **Illustrations** | the images, stories and analogies a speaker used |
-| **Questions** | tensions, gaps, unresolved claims, and garbled transcript regions |
+| **Questions** | tensions, gaps, assertions a speaker left unargued, and garbled transcript regions |
 
 **Exegesis and Application entries must carry a verse key**; the other four may
 omit one, since an illustration or a historical note is not always about a
@@ -203,44 +220,65 @@ into a worklist rather than a pile of unnoticed problems.
 
 ### Writing your own notes
 
-Not everything comes from someone else. To record your own study, add a page in
-`notes/` — either by hand or by asking the agent:
+Not everything comes from someone else. Your own study belongs in `notes/`, on
+its own page, kept distinct from the preacher's words rather than folded into
+them.
+
+A common case: notes taken by hand *during* a sermon. Photograph or type them
+up, drop them in `inbox/` alongside the transcript, and they become their own
+page:
 
 ```markdown
 ---
 type: note
-title: Two kinds of judgment in the church
+title: Two aims of the curriculum of Christianity
 medium: own-notes
-date: 2026-07-27
-passages: ["1 Corinthians 4:3-5"]
-passage_keys: [1CO.4.3-5]
-tags: [ecclesiology]
+date: 2026-07-26
+passages: ["Ephesians 4:20-21"]
+passage_keys: [EPH.4.20-21]
+tags: [christology, sanctification]
+source: sources/2026/2026-07-26-ephesians-4-20-21.md
+sections_absent: [history, illustration, question]
 ---
 
-Why Paul can forbid judgment and Scripture can command discernment.
+Handwritten notes taken during Christ the Curriculum of Christianity, kept as a
+separate page because they are the hearer's own condensation rather than the
+preacher's words.
 
 ## Exegesis
 
-- `[1CO.4.3-5]` "Judgment" here is not one act but two: the ultimate verdict,
-  which Paul defers to the Lord's coming, and the ordinary discernment believers
-  owe one another, which he never withdraws
+- `[EPH.4.23]` "Be renewed" names a radical transformation rather than an
+  adjustment › [¶3 "v. 23 be renewed - a radical transformation."]
+
+## Doctrine
+
+- `[EPH.4.23]` The transformation in view is the one that occurs when Christ
+  becomes Lord of a life — as set out in The Gospel According to Jesus, John
+  MacArthur › [¶3 "contains a description of the transformation that occurs
+  when Christ becomes the Lord of one's life."]
 ```
 
-`medium: own-notes` is what tells the tools these are your words, which is why
-anchors are optional here — there is no one else's text to stay faithful to. On
-a page about someone else's material, anchors are required. Note pages flow into
-the verse tree exactly like sermon pages, so your own conclusions sit beside the
-sermons on the same verse.
+Two things worth noticing.
+
+**Your notes carry what the transcript could not.** The sermon named that book
+only by title; the hearer wrote down the author. Both pages now sit under
+`EPH.4.23`, and the verse page holds the fuller account than either source alone.
+
+**`medium: own-notes` marks these as your words**, which makes anchors optional
+— there is no one else's text to stay faithful to. Here they are present anyway,
+because the handwritten notes were themselves kept in `sources/`, so each line
+can still be traced to the page it was written on. If you type straight into a
+note page with no retained source, omit the `source` field and the anchors.
 
 **About tags.** The first time you use a tag, `scripts/validate` warns that it
 has no topic page:
 
 ```
-WARN: tag 'ecclesiology' has no topics/ecclesiology.md page
+WARN: tag 'christology' has no topics/christology.md page
 ```
 
 That is a nudge, not a failure — it is asking you to say in a sentence or two
-what you mean by the tag, in `topics/ecclesiology.md`. Backlinks to everything
+what you mean by the tag, in `topics/christology.md`. Backlinks to everything
 carrying it are generated for you in `topics/_generated/`. Write the page or
 drop the tag; both make the warning go away, and the warning exists to stop a
 vocabulary of near-duplicate tags accumulating unnoticed.
