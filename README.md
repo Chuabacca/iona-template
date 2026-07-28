@@ -2,16 +2,13 @@
 
 ## The name
 
-Iona is the island off the west coast of Scotland where, from the sixth century,
-a community of monks copied the Scriptures by hand — line by line, letter by
-letter — so that the text would come through intact. They understood what they
-were handling. Scripture is the authoritative, inerrant word of God, and the
-copyist's whole task is to transmit it exactly, adding nothing and losing
-nothing.
+Iona is named after the island off the west coast of Scotland where, from the sixth century,
+a community of monks copied the Scriptures by hand. It was instrumental in preserving
+Scripture and biblical literacy after the fall of the Roman Empire.
 
-That conviction is the design of this project, not a sentiment attached to it.
-A tool that helps you study the Bible with an AI ought to be built so that the
-text governs the tool, never the reverse:
+Scripture is the authoritative, inerrant word of God, and it is the believer's task
+to study it faithfully. This is the conviction behind this project. Iona allows the text
+to anchor the learning process while leveraging AI as an assistant.
 
 - **Every claim is keyed to a verse.** Notes do not float free of the passage
   they came from.
@@ -19,13 +16,11 @@ text governs the tool, never the reverse:
   produced it, and `scripts/validate` checks the quote is still there. Nothing
   the agent writes about a source is unverifiable against that source.
 - **The agent never reconstructs verse text from memory** in any translation.
-  It asks. A model's recollection of a verse is not the verse.
-- **Sources are recorded, not corrected.** Where a teacher disagrees with your
-  own convictions, the agent writes down what he actually said and flags the
-  tension, rather than quietly harmonizing it away. The corpus is a record, not
-  an echo chamber.
-
-Copying is careful work. This is a workspace for doing it carefully.
+  It asks. A model's recollection of a verse is not the authoritative source.
+- **Sources are recorded, not corrected.** If there is tension between scripture,
+  someone's teaching, and your own convictions, the agent writes down what was actually
+  said and flags the tension, rather than quietly harmonizing it away. The corpus is a record,
+  not an echo chamber.
 
 ## What it is
 
@@ -63,7 +58,7 @@ and the validator tells you immediately which entries you just invalidated.
 
 ```
 scripts/setup              # activate the pre-commit hook
-scripts/setup --ml         # optional: local transcription + semantic search
+scripts/setup --ml         # optional: local transcription model + semantic search
 scripts/fetch-bsb          # install the public-domain Berean Standard Bible
 ```
 
