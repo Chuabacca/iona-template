@@ -19,15 +19,11 @@ make in this workspace:
 
 - **The Bible is God's written revelation to man** — objective, propositional
   revelation, infallible and absolutely inerrant in the original documents.
-- **It is the only infallible rule of faith and practice.**
-- **Dual authorship.** God spoke in His Word through human authors whom the
-  Holy Spirit superintended.
 - **Literal, grammatical, historical interpretation.** A passage may have
   several applications, but it has only one true interpretation.
 
 So the work here is not producing claims *about* a text. It is drawing out the
-meaning God has already put in it. Through reading and hearing, meditation, and
-study, we behold Christ and come to know His mind — and an entry is a record of
+meaning God has already put in it. An entry is a record of
 what was seen there, never an invention, and never something the text does not
 carry.
 
