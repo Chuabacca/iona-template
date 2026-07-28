@@ -1,4 +1,4 @@
-# iona-template — an agent-primary scripture knowledge workspace
+# Iona — an agent-primary scripture knowledge workspace
 
 ## The name
 
