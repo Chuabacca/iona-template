@@ -278,6 +278,36 @@ def _check_version_files():
                 last_v = p["v1"]
 
 
+def check_corpus_version():
+    """Compare .iona-version against the format these scripts speak (SPEC §10).
+
+    A warning rather than an error on purpose: someone who has just upgraded
+    the mechanics should still be able to commit while they migrate. The
+    pre-commit hook surfaces it on every commit until they do, and --strict
+    promotes it for anyone who wants the harder guarantee.
+    """
+    v = lib.corpus_version()
+    if v is None:
+        warn("(repo)", 0,
+             ".iona-version is missing — cannot tell which corpus format this "
+             "repo was built against. Write %r into it if the corpus is "
+             "current (SPEC §10)." % lib.FORMAT_VERSION)
+        return
+    try:
+        compatible = lib.format_compatible(v)
+    except lib.SpecError as e:
+        err(".iona-version", 0, str(e))
+        return
+    if not compatible:
+        older = lib.parse_version(v) < lib.parse_version(lib.FORMAT_VERSION)
+        warn("(repo)", 0,
+             "corpus format %s, scripts speak %s — %s. See MIGRATIONS.md, then "
+             "update .iona-version."
+             % (v, lib.FORMAT_VERSION,
+                "the mechanics are newer than this corpus" if older
+                else "this corpus is newer than the mechanics"))
+
+
 def check_scripture_tree():
     """Everything under scripture/ (outside _text/) is generated. The new
     per-verse layout invites writing a note straight into a verse file, where
@@ -337,6 +367,7 @@ def main(argv):
     speakers, tags_seen = {}, {}
     for path in lib.iter_page_paths(include_templates=True):
         check_page(path, speakers, tags_seen)
+    check_corpus_version()
     check_text_store()
     check_scripture_tree()
     check_vocabulary(speakers, tags_seen)

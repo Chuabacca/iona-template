@@ -271,3 +271,34 @@ in `scripts/ingest`, so a run is reproducible rather than improvised. The
   section of §4 either written or named in `sections_absent`.
 - **`finish` clears the inbox last**, and only for an item whose content hashes
   equal to the retained transcript.
+
+## 10. Corpus format version (`.iona-version`)
+
+A single line holding the semver version of the corpus format this repository
+was last migrated to:
+
+```
+0.1.0
+```
+
+`scripts/lib.py` declares the version the mechanics speak (`FORMAT_VERSION`).
+`scripts/validate` compares the two and warns — never blocks — when they
+disagree, so an upgrade surfaces at the next commit through the pre-commit hook
+rather than as a wall of validation errors. `--strict` promotes it.
+
+**Compatibility axis.** Below `1.0.0` the MINOR is the axis, per semver's rule
+for initial development: `0.1.x` → `0.2.0` is a breaking format change and
+`0.1.0` → `0.1.7` is not. From `1.0.0` onward the MAJOR is the axis in the
+usual way.
+
+A change is breaking if an existing, previously valid corpus would fail
+`scripts/validate` against the new mechanics — a frontmatter field whose legal
+values changed, a new required field, a rename in the generated tree. Adding a
+capability that leaves existing corpora valid is not breaking.
+
+**Upgrading.** A repository created from the template shares no git history
+with it, so there is no merge path. To take a newer version, replace the
+mechanics — `scripts/`, `SPEC.md`, `templates/`, `.claude/` — which
+`CLAUDE.md` §2 already forbids editing, then follow `MIGRATIONS.md` for each
+minor version crossed and update `.iona-version`. Never replace
+`HERMENEUTICS.md` or anything under the content directories.

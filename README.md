@@ -54,6 +54,26 @@ paraphrase names the paragraph it came from and quotes it verbatim, and
 `scripts/validate` checks that the quote is still there. Correct a transcript
 and the validator tells you immediately which entries you just invalidated.
 
+## Stability
+
+**Pre-1.0 — the mechanics are still moving.** Below `1.0.0` the MINOR version
+is the compatibility axis: `0.1.x` → `0.2.0` may require migrating an existing
+corpus, `0.1.0` → `0.1.7` will not.
+
+Your corpus records the format it was built against in `.iona-version`, and
+`scripts/validate` — which the pre-commit hook runs — warns whenever that
+disagrees with the scripts. So you find out you are behind at your next commit,
+rather than by having to watch this repository.
+
+To upgrade: replace `scripts/`, `SPEC.md`, `templates/` and `.claude/`, follow
+[`MIGRATIONS.md`](MIGRATIONS.md) for each minor version crossed, then update
+`.iona-version`. Never replace `HERMENEUTICS.md` or your content directories.
+See [`CHANGELOG.md`](CHANGELOG.md) for what changed, and SPEC §10 for the rule.
+
+1.0 comes when the format has held steady through real use — including by
+someone other than the author, since that is the only way to learn which
+mechanics are actually load-bearing.
+
 ## Quick start
 
 ```

@@ -11,6 +11,14 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOOKS_PATH = os.path.join(ROOT, "scripts", "books.json")
 
+# ---------------------------------------------------------------- format version
+# The corpus format these scripts speak (SPEC §10). A corpus records the version
+# it was last migrated to in .iona-version, and validate compares the two — so
+# someone who upgrades the mechanics under an existing corpus is told at their
+# next commit, instead of meeting it as a wall of validation errors.
+FORMAT_VERSION = "0.1.0"
+VERSION_FILE = os.path.join(ROOT, ".iona-version")
+
 CONTENT_DIRS = ("sermons", "notes", "resources")
 GENERATED_DIRS = ("scripture", "speakers", "series", os.path.join("topics", "_generated"))
 GENERATED_HEADER = "<!-- GENERATED — do not edit. Rebuild: scripts/generate -->"
@@ -72,6 +80,39 @@ VERSE_LINE_RE = re.compile(r"^([A-Z0-9]{3}\.[0-9]+\.[0-9]+) \| (.+)$")
 
 class SpecError(ValueError):
     pass
+
+
+# ------------------------------------------------------- format compatibility
+
+def parse_version(v):
+    """'0.2.1' -> (0, 2, 1). Pre-release suffixes are ignored for comparison."""
+    core = v.strip().split("-")[0].split("+")[0]
+    parts = core.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise SpecError("not a semver version: %r (SPEC §10)" % v)
+    return tuple(int(p) for p in parts)
+
+
+def corpus_version():
+    """Format version this corpus was last migrated to, or None if unstamped."""
+    if not os.path.exists(VERSION_FILE):
+        return None
+    with open(VERSION_FILE, encoding="utf-8") as f:
+        v = f.read().strip()
+    return v or None
+
+
+def format_compatible(corpus, tool=None):
+    """Can these scripts read a corpus stamped `corpus`?
+
+    Below 1.0 the MINOR is the compatibility axis, per semver §4 — initial
+    development, where anything may change — so 0.1.x -> 0.2.0 is a break.
+    From 1.0 onward it is the MAJOR, in the usual way.
+    """
+    tool = tool or FORMAT_VERSION
+    c, t = parse_version(corpus), parse_version(tool)
+    axis = 2 if t[0] == 0 else 1
+    return c[:axis] == t[:axis]
 
 
 # ---------------------------------------------------------------- books
