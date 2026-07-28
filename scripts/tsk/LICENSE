@@ -1,0 +1,30 @@
+cross_references.json — Creative Commons Attribution 4.0 International (CC BY 4.0)
+
+This file is NOT covered by the MIT license at the root of this repository.
+
+Source
+  Treasury of Scripture Knowledge cross-reference dataset
+  openbible.info — https://www.openbible.info/labs/cross-references/
+
+License
+  Creative Commons Attribution 4.0 International (CC BY 4.0)
+  https://creativecommons.org/licenses/by/4.0/
+
+You are free to share and adapt this data, including commercially, provided you
+give appropriate credit to openbible.info, link to the license, and indicate if
+you made changes. Keep this file alongside the data if you redistribute it.
+
+Changes made here
+  Produced from the upstream tab-separated release (From / To / Votes) by
+  scripts/tsk_convert.py. The data has been:
+
+    - reformatted to JSON keyed by source passage key, each value a list of
+      [reference, votes] pairs — {"GEN.1.1": [["PRO.8.22-30", 59], ...]}
+    - re-expressed in this project's passage-key grammar (SPEC §3)
+    - filtered by a minimum vote threshold and truncated to the top N
+      references per source verse
+    - reduced by dropping rows that fail validation against the versification
+      table in scripts/books.json
+
+  It is therefore a subset of the upstream dataset, not a complete copy. No
+  cross-reference has been added, and no vote count altered.

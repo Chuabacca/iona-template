@@ -1,11 +1,38 @@
 # iona-template — an agent-primary scripture knowledge workspace
 
+## The name
+
+Iona is the island off the west coast of Scotland where, from the sixth century,
+a community of monks copied the Scriptures by hand — line by line, letter by
+letter — so that the text would come through intact. They understood what they
+were handling. Scripture is the authoritative, inerrant word of God, and the
+copyist's whole task is to transmit it exactly, adding nothing and losing
+nothing.
+
+That conviction is the design of this project, not a sentiment attached to it.
+A tool that helps you study the Bible with an AI ought to be built so that the
+text governs the tool, never the reverse:
+
+- **Every claim is keyed to a verse.** Notes do not float free of the passage
+  they came from.
+- **Every paraphrase carries a verbatim quote anchor** back to the words that
+  produced it, and `scripts/validate` checks the quote is still there. Nothing
+  the agent writes about a source is unverifiable against that source.
+- **The agent never reconstructs verse text from memory** in any translation.
+  It asks. A model's recollection of a verse is not the verse.
+- **Sources are recorded, not corrected.** Where a teacher disagrees with your
+  own convictions, the agent writes down what he actually said and flags the
+  tension, rather than quietly harmonizing it away. The corpus is a record, not
+  an echo chamber.
+
+Copying is careful work. This is a workspace for doing it carefully.
+
+## What it is
+
 A template for building a personal, git-versioned store of scripture knowledge.
 Drop in sermon audio, transcripts, or study notes; a Claude-class agent
 categorizes them, links every claim to a verse and to the verbatim words that
 produced it, and compiles the result into one markdown file per Bible verse.
-
-Named for Iona — the island community that copied and preserved the scriptures.
 
 Everything here is plain markdown and `python3` with no third-party
 dependencies. The only optional extras are local ML models for transcription
@@ -112,10 +139,26 @@ that:
   decide early.
 - **Page types** — `lib.REQUIRED_FIELDS`.
 
+## License
+
+The mechanics — scripts, spec, templates, documentation — are **MIT**. See
+[`LICENSE`](LICENSE).
+
+Two carve-outs matter:
+
+- **`scripts/tsk/cross_references.json` is CC BY 4.0**, not MIT. It derives from
+  the [openbible.info](https://www.openbible.info/labs/cross-references/)
+  cross-reference dataset. Redistribute it and you must keep the attribution —
+  see [`scripts/tsk/LICENSE`](scripts/tsk/LICENSE).
+- **The license covers the tool, not your corpus.** Sermon transcripts,
+  recordings, and book excerpts you ingest remain their authors' copyrighted
+  works. MIT on this template grants you nothing with respect to them.
+
 ## Privacy & copyright
 
 - Sermon transcripts are third-party content stored for **personal use**. Keep
-  your corpus repo **private**.
+  your corpus repo **private**. This template is public; a corpus built from it
+  generally should not be.
 - Bible text lives in `scripture/_text/<version>/`. The default (`bsb`) is the
   Berean Standard Bible, dedicated to the public domain by its publisher, and is
   safe to commit. Any other version is copyrighted, gitignored by default, and
@@ -124,5 +167,3 @@ that:
 - Audio is treated as a transient ingestion input and discarded once the
   transcript exists. `.gitignore` blocks audio extensions outright so a
   recording can never be committed, even mid-run.
-- Cross-reference data in `scripts/tsk/` derives from
-  [openbible.info](https://www.openbible.info/labs/cross-references/) (CC-BY).

@@ -1,0 +1,55 @@
+MIT License
+
+Copyright (c) 2026 Jonathan Chua
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+THIRD-PARTY CONTENT
+
+The MIT license above does NOT cover everything in this repository.
+
+  scripts/tsk/cross_references.json
+
+is derived from the Treasury of Scripture Knowledge cross-reference dataset
+published by openbible.info, which is licensed under Creative Commons
+Attribution 4.0 International (CC BY 4.0):
+
+  https://www.openbible.info/labs/cross-references/
+  https://creativecommons.org/licenses/by/4.0/
+
+If you redistribute that file, or any work derived from it, you must keep the
+attribution. See scripts/tsk/LICENSE. Removing the attribution while relying on
+the MIT grant above would breach CC BY 4.0.
+
+--------------------------------------------------------------------------------
+WHAT THIS LICENSE DOES NOT COVER
+
+This license covers the mechanics in this repository — the scripts, the format
+specification, the templates, and the documentation. It says nothing about the
+material you ingest with them.
+
+Sermon transcripts, recordings, articles, and book excerpts placed in a corpus
+built from this template remain the copyrighted works of their authors and
+speakers. Storing them for personal study is a separate question from
+redistributing them; keep your corpus repository private.
+
+Bible translations are likewise copyrighted, with the exception of translations
+explicitly dedicated to the public domain, such as the Berean Standard Bible
+that scripts/fetch-bsb installs.
