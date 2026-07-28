@@ -141,10 +141,9 @@ that:
 
 ## License
 
-The mechanics — scripts, spec, templates, documentation — are **MIT**. See
-[`LICENSE`](LICENSE).
-
-Two carve-outs matter:
+The mechanics — scripts, spec, templates, documentation — are **MIT**
+([`LICENSE`](LICENSE)). Two carve-outs matter, both spelled out in
+[`NOTICE`](NOTICE):
 
 - **`scripts/tsk/cross_references.json` is CC BY 4.0**, not MIT. It derives from
   the [openbible.info](https://www.openbible.info/labs/cross-references/)

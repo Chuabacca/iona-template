@@ -1,0 +1,34 @@
+NOTICE — scope of the MIT license in LICENSE
+
+THIRD-PARTY CONTENT
+
+The MIT license in LICENSE does NOT cover everything in this repository.
+
+  scripts/tsk/cross_references.json
+
+is derived from the Treasury of Scripture Knowledge cross-reference dataset
+published by openbible.info, which is licensed under Creative Commons
+Attribution 4.0 International (CC BY 4.0):
+
+  https://www.openbible.info/labs/cross-references/
+  https://creativecommons.org/licenses/by/4.0/
+
+If you redistribute that file, or any work derived from it, you must keep the
+attribution. See scripts/tsk/LICENSE. Removing the attribution while relying on
+the MIT grant in LICENSE would breach CC BY 4.0.
+
+
+WHAT THE LICENSE DOES NOT COVER
+
+The MIT license covers the mechanics in this repository — the scripts, the format
+specification, the templates, and the documentation. It says nothing about the
+material you ingest with them.
+
+Sermon transcripts, recordings, articles, and book excerpts placed in a corpus
+built from this template remain the copyrighted works of their authors and
+speakers. Storing them for personal study is a separate question from
+redistributing them; keep your corpus repository private.
+
+Bible translations are likewise copyrighted, with the exception of translations
+explicitly dedicated to the public domain, such as the Berean Standard Bible
+that scripts/fetch-bsb installs.
